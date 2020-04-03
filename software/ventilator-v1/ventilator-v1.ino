@@ -13,44 +13,67 @@ LiquidCrystal_I2C lcd(0x27, 20, 4); // set the LCD address to 0x27 for a 16 char
 
 Adafruit_BMP085 bmp;
 
-enum states {SETUP, INHALE, PAUSE, EXHALE};
+enum states {CALIBRATION, SETUP, INHALE, PAUSE, EXHALE};
 
-//
-// Variables
-//
-int state = SETUP; // Current state
-int t_current = 0;  // Time elapsed in current state
-int t_start = 0;  // Time elapsed in current state
-int p_peak = 0;     // Maximum pressure during inhale. We consider 40 cmH20 to be the upper pressure limit for safety.
-int p_plat = 0;     // The plateau pressure of the inhale. An important diagnostic number for clinicians.
-int peep = 0;       // The residual pressure in the system after exhale. Controlled manually via a PEEP valve on the Ambu Bag.
-long p_meas = 0;    // Measured pressure
-bool at_home = false;
-volatile long pos_home = 0;  // Calibrated home position
-volatile long pos_max = 0;  // TODO: Determine how to calibrate this.
-double v_max = 0.0; // Set the max speed of the fingers, depending on state TODO: Determine if there's a better way to do MISO/Split-PID control.
-
-//
-// Clinical Parameters
-//
-float tidal_vol = 0.0;  // The total volume of air to be delivered to the patient, in % of bag max. Max will be roughly 1000ml.
-int bpm = 0;        // Breaths per minute, also called respiratory rate (RR). Typically varies between 8-30 BPM.
-int ie_ratio = 0;   // The ratio (1:ie_ratio) of the duration of the inhale to the duration of the exhale. 
-                    // For example, a 1:3 ratio means that the exhale phase lasts three times longer than the inhale phase.
-                    // Typically varies between 1:1 to 1:3, with a maximum of 1:4 currently being observed in COVID-19 patients.
-
-//
+/**************************************************/
 // Hard-coded Parameters
-//
+/**************************************************/
+// Clinical
 float t_hold    = 0.015;    // The amount of time (in seconds) to hold the compression at the end of the inhale for plateau pressure.
-int v_ex        = 50;       // The velocity of the fingers in the expiratory phase (in pulses/second). Note: this doens't affect breath.
-int v_homing    = 10;       // The velocity of the fingers during homing (i.e. slow), in pulses/second).
 int p_max       = 40;       // The maximum allowable pressure (set to 40 cmH20).
-double kp=3, ki=0, kd=0.0;  // PID parameters
+int v_ex        = 0.5;      // The velocity of the fingers in the expiratory phase (in % of max). Note: this doens't affect breath.
 
-//
+// PID
+double kp=3;
+double ki=0;
+double kd=0.0;
+
+// Arm Position Calibration
+int pos_open = 250;             // Where the figers should open to between breaths.
+int pos_hardstop_offset = 30;   // How far home position is from hard stop.
+int v_homing = 0.5;          // The velocity of the fingers during homing (i.e. slow), in % of max.
+int step_size = 3;              // Step size during home scan (will affect how fast calibration happens)
+int step_interval = 7;          // How long between steps (changing setpoint). Cannot be too fast or it will be miss-calibrated!
+int max_error = step_size * 20; // Sensitivity for detecting hardstop. Too low will cause miss-calibration. Too high stresses the mechanicals.
+
+
+/**************************************************/
+// Pin Assignments
+/**************************************************/
+const int PIN_TIDAL_VOLUME_INPUT    = A0;
+const int PIN_BPM_INPUT             = A1;
+const int PIN_IE_RATIO_INPUT        = A2;
+const int PIN_MOTOR_PWM             = 5;
+const int PIN_MOTOR_A               = 6;
+const int PIN_MOTOR_B               = 7;
+const int PIN_HOME_SWITCH           = 7;
+
+
+/**************************************************/
+// Variables
+/**************************************************/
+int state; // Current state
+float t_current = 0;        // Time elapsed in current state
+float t_start = 0;          // Time elapsed in current state
+float p_peak = 0;           // Maximum pressure during inhale. We consider 40 cmH20 to be the upper pressure limit for safety.
+float p_plat = 0;           // The plateau pressure of the inhale. An important diagnostic number for clinicians.
+int peep = 0;               // The residual pressure in the system after exhale. Controlled manually via a PEEP valve on the Ambu Bag.
+long p_meas = 0;            // Measured pressure
+bool at_home = false;       // Flag indicating limit switch at home is pressed.
+volatile long pos_home = 0; // Calibrated home position
+volatile long pos_max = 0;  // TODO: Determine how to calibrate this.
+double v_max = 0.0;         // Set the max speed of the fingers, depending on state TODO: Determine if there's a better way to do MISO/Split-PID control.
+long pos_homing_error = 0;  // During homing, how far off is the setpoint from the actual
+long t_homing_step = 0;     // How long between shifts in setpoint for homing (this change how fast homing happens)
+
+// Clinical Settings
+float tidal_vol = 0.0;  // The total volume of air to be delivered to the patient, in % of bag max. Max will be roughly 1000ml.
+int bpm = 0;            // Breaths per minute, also called respiratory rate (RR). Typically varies between 8-30 BPM.
+int ie_ratio = 0;       // The ratio (1:ie_ratio) of the duration of the inhale to the duration of the exhale. 
+                        // For example, a 1:3 ratio means that the exhale phase lasts three times longer than the inhale phase.
+                        // Typically varies between 1:1 to 1:3, with a maximum of 1:4 currently being observed in COVID-19 patients.
+
 // Calculated Parameters
-//
 int t_cycle = 0;    // The length of time (in seconds) of an inhale/exhale cycle.
 int t_in = 0;       // The length of time (in seconds) of the inspiratory phase.
 int t_ex = 0;       // The length of time (in seconds) of the expiratory phase.
@@ -59,17 +82,6 @@ int v_in = 0;       // The rotation rate of the inspiratory phase (in pulses/sec
 // PID
 double enc_input=0, vel_output=0, pos_setpoint=0;
 PID myPID(&enc_input, &vel_output, &pos_setpoint,kp,ki,kd, DIRECT);
-
-//
-// Pin Assignments
-//
-const int PIN_TIDAL_VOLUME_INPUT    = A0;
-const int PIN_BPM_INPUT             = A1;
-const int PIN_IE_RATIO_INPUT        = A2;
-const int PIN_MOTOR_PWM             = 5;
-const int PIN_MOTOR_A               = 6;
-const int PIN_MOTOR_B               = 7;
-const int PIN_HOME_SWITCH           = 7;
 
 
 void readSettings(){
@@ -160,6 +172,7 @@ void resetStateClock(){
 
 void setup()
 {
+    state = CALIBRATION;
     initializeLCD();
 
     pinMode(PIN_MOTOR_A, OUTPUT); 
@@ -182,7 +195,7 @@ void loop()
     /**************************************************/
     p_meas = bmp.readPressure();
     enc_input = myEnc.read();
-    at_home = !digitalRead(PIN_HOME_SWITCH); // TODO chcek if this is backwards.
+    // at_home = !digitalRead(PIN_HOME_SWITCH); // TODO chcek if this is backwards.
     
 
     /**************************************************/
@@ -205,15 +218,31 @@ void loop()
     switch (state)
     {
     
-    case SETUP:
-        // Do homing:
-        if(!at_home){
-            // Move motor towards limit switch, with velocity v_homing
-            driveMotor(-v_homing);
+    case CALIBRATION:
+        // Move arms until they hit hard-stop (and can no longer make it to setpoint)
+        // TODO: Figure out how this can fail, and how to prevent it.
+        pos_homing_error = pos_setpoint - enc_input; 
+        if(pos_homing_error > -max_error){
+            if(millis() - t_homing_step > step_interval){
+                pos_setpoint -= step_size;
+                v_max = v_homing;
+                t_homing_step = millis();
+            }
         }
         else {
-            // TODO: Move home position to just before limit switch
-            pos_home = enc_input; // Calibrate home position
+            myEnc.write(-30);   // Set home position to a little bit before hard stop.
+            pos_home = 0;       // Calibrate home position
+            state = SETUP;
+        }
+        break;
+    
+    case SETUP:
+        // Move arms to open position
+        pos_setpoint = pos_open;
+        v_max = v_ex;
+        pos_homing_error = pos_setpoint - enc_input; 
+
+        if(abs(pos_homing_error) <= max_error){
             state = INHALE;
             resetStateClock();
         }
@@ -249,7 +278,7 @@ void loop()
     case EXHALE:
         if(t_current < t_ex){
             // Command motor to go to home position, at velocity v_ex
-            pos_setpoint = pos_home;
+            pos_setpoint = pos_open;
             v_max = v_ex;
         }
         else {
