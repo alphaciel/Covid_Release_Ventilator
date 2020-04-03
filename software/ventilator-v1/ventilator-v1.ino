@@ -7,7 +7,7 @@
 #include <Encoder.h>
 #include <PID_v1.h>
 
-Encoder myEnc(2, 3);
+Encoder myEnc(3, 2);
 
 LiquidCrystal_I2C lcd(0x27, 20, 4); // set the LCD address to 0x27 for a 16 chars and 2 line display
 
@@ -21,28 +21,30 @@ enum states {CALIBRATION, SETUP, INHALE, PAUSE, EXHALE};
 // Clinical
 float t_hold    = 0.015;    // The amount of time (in seconds) to hold the compression at the end of the inhale for plateau pressure.
 int p_max       = 40;       // The maximum allowable pressure (set to 40 cmH20).
-int v_ex        = 0.5;      // The velocity of the fingers in the expiratory phase (in % of max). Note: this doens't affect breath.
+int v_ex        = 30;      // The velocity of the fingers in the expiratory phase (in % of max). Note: this doens't affect breath.
 
 // PID
-double kp=3;
-double ki=0;
-double kd=0.0;
+double kp=2.0;
+double ki=0.001;
+double kd=0;
 
 // Arm Position Calibration
-int pos_open = 250;             // Where the figers should open to between breaths.
-int pos_hardstop_offset = 30;   // How far home position is from hard stop.
-int v_homing = 0.5;          // The velocity of the fingers during homing (i.e. slow), in % of max.
-int step_size = 3;              // Step size during home scan (will affect how fast calibration happens)
-int step_interval = 7;          // How long between steps (changing setpoint). Cannot be too fast or it will be miss-calibrated!
-int max_error = step_size * 20; // Sensitivity for detecting hardstop. Too low will cause miss-calibration. Too high stresses the mechanicals.
+int pos_open = 0;               // Where the figers should open to between breaths.
+int pos_closed = 230;           // TODO: Determine how to calibrate this.
+int pos_threshold = 20;         // How big is the 'home' area
+int pos_hardstop_offset = 180;  // How far home position is from hard stop.
+int v_homing = 25;              // The velocity of the fingers during homing (i.e. slow), in % of max.
+int step_size = 5;              // Step size during home scan (will affect how fast calibration happens)
+int step_interval = 7;          // How long (ms) between steps (changing setpoint). Cannot be too fast or it will be miss-calibrated!
+int max_error = step_size * 10; // Sensitivity for detecting hardstop. Too low will cause miss-calibration. Too high stresses the mechanicals.
 
 
 /**************************************************/
 // Pin Assignments
 /**************************************************/
-const int PIN_TIDAL_VOLUME_INPUT    = A0;
-const int PIN_BPM_INPUT             = A1;
-const int PIN_IE_RATIO_INPUT        = A2;
+const int PIN_IE_RATIO_INPUT        = A1;
+const int PIN_BPM_INPUT             = A2;
+const int PIN_TIDAL_VOLUME_INPUT    = A3;
 const int PIN_MOTOR_PWM             = 5;
 const int PIN_MOTOR_A               = 6;
 const int PIN_MOTOR_B               = 7;
@@ -53,18 +55,17 @@ const int PIN_HOME_SWITCH           = 7;
 // Variables
 /**************************************************/
 int state; // Current state
-float t_current = 0;        // Time elapsed in current state
-float t_start = 0;          // Time elapsed in current state
+double t_current = 0;       // Time elapsed in current state
+double t_start = 0;         // Time elapsed in current state
 float p_peak = 0;           // Maximum pressure during inhale. We consider 40 cmH20 to be the upper pressure limit for safety.
 float p_plat = 0;           // The plateau pressure of the inhale. An important diagnostic number for clinicians.
 int peep = 0;               // The residual pressure in the system after exhale. Controlled manually via a PEEP valve on the Ambu Bag.
 long p_meas = 0;            // Measured pressure
 bool at_home = false;       // Flag indicating limit switch at home is pressed.
-volatile long pos_home = 0; // Calibrated home position
-volatile long pos_max = 0;  // TODO: Determine how to calibrate this.
-double v_max = 0.0;         // Set the max speed of the fingers, depending on state TODO: Determine if there's a better way to do MISO/Split-PID control.
+float v_max = 0.0;          // Set the max speed of the fingers, depending on state TODO: Determine if there's a better way to do MISO/Split-PID control.
 long pos_homing_error = 0;  // During homing, how far off is the setpoint from the actual
 long t_homing_step = 0;     // How long between shifts in setpoint for homing (this change how fast homing happens)
+float debug_max_v = 0;      // Records the max motor output per cycle, for debugging purposes.
 
 // Clinical Settings
 float tidal_vol = 0.0;  // The total volume of air to be delivered to the patient, in % of bag max. Max will be roughly 1000ml.
@@ -74,10 +75,10 @@ int ie_ratio = 0;       // The ratio (1:ie_ratio) of the duration of the inhale 
                         // Typically varies between 1:1 to 1:3, with a maximum of 1:4 currently being observed in COVID-19 patients.
 
 // Calculated Parameters
-int t_cycle = 0;    // The length of time (in seconds) of an inhale/exhale cycle.
-int t_in = 0;       // The length of time (in seconds) of the inspiratory phase.
-int t_ex = 0;       // The length of time (in seconds) of the expiratory phase.
-int v_in = 0;       // The rotation rate of the inspiratory phase (in pulses/second).
+float t_cycle = 0;    // The length of time (in seconds) of an inhale/exhale cycle.
+float t_in = 0;       // The length of time (in seconds) of the inspiratory phase.
+float t_ex = 0;       // The length of time (in seconds) of the expiratory phase.
+float v_in = 0;       // The rotation rate of the inspiratory phase (in pulses/second).
 
 // PID
 double enc_input=0, vel_output=0, pos_setpoint=0;
@@ -86,55 +87,86 @@ PID myPID(&enc_input, &vel_output, &pos_setpoint,kp,ki,kd, DIRECT);
 
 void readSettings(){
     // Read settings poteniometers
-    tidal_vol = analogRead(A0) / 1024.0;// Analog 0-1024 to percent scale (0-100)
-    bpm = analogRead(A1) / 22 + 8;      // Analog 0-1024 to 8-30bpm (range of 22)
-    ie_ratio = analogRead(A2) / 4;      // Analog 0-1024 to 1-4
+    tidal_vol = (1024 - analogRead(PIN_TIDAL_VOLUME_INPUT)) / 2048.0 + 0.5; // Analog 0-1024 to percent scale (0.5-1)
+    bpm = (1024 - analogRead(PIN_BPM_INPUT)) / 47 + 8;             // Analog 0-1024 to 8-30bpm (range of 22)
+    ie_ratio = (1024 - analogRead(PIN_IE_RATIO_INPUT)) / 341 + 1;           // Analog 0-1024 to 1-4
+}
 
-    // TODO: decide between the use of seconds and milliseconds
+void updateSettings(){
     // Calculate new parameters
     t_cycle = 60/bpm;
     t_in = t_cycle / (1 + ie_ratio);
     t_ex = t_cycle - t_in;
-    v_in = pos_max * tidal_vol / t_in;
+    v_in = 255; // Max
+    // v_in = pos_closed * tidal_vol / t_in;  // TODO: Make this meaningful somehow. Perhaps use planning to create waypoints.
 }
 
 // TODO: Plan when to update LCD 
 void updateLCD()
 {
+    // State (Debugging)
+    // lcd.setCursor(0, 0);
+    // lcd.print(state);
+    // lcd.print("");
+    
     // Current Pressure
-    lcd.setCursor(0, 0);
-    lcd.print("P= ");
-    lcd.print(bmp.readPressure());
-    lcd.print("   ");
+    // lcd.setCursor(0, 0);
+    // lcd.print("P= ");
+    // lcd.print(bmp.readPressure());
+    // lcd.print("   ");
+
+    // t_in, t_ex, 
+    // lcd.setCursor(0, 1);
+    // lcd.print("T_in: ");
+    // lcd.print(t_in);
+    // lcd.print("  ");
+
+    // Encoder // Debug
+    // lcd.setCursor(0, 2);
+    // lcd.print("Pos:");
+    // lcd.print(enc_input, 2);
+    // lcd.print(" ");
+    
+    // Setpoint // Debug
+    // lcd.setCursor(0, 3);
+    // lcd.print("Set:");
+    // lcd.print(pos_setpoint, 2);
+    // lcd.print("  ");
+    
+    // Vel Output
+    // lcd.setCursor(0, 3);
+    // lcd.print("Vel: ");
+    // lcd.print(vel_output);
+    // lcd.print("  ");
 
     // Tidal Volume
-    lcd.setCursor(0, 1);
-    lcd.print("TV: ");
-    lcd.print(tidal_vol);
+    lcd.setCursor(12, 0);
+    lcd.print(" TV: ");
+    lcd.print(tidal_vol * 100, 0);
     lcd.print("  ");
 
     // BPM
-    lcd.setCursor(10, 1);
+    lcd.setCursor(12, 1);
     lcd.print("BPM: ");
     lcd.print(bpm);
     lcd.print("  ");
 
     // IE Ratio
-    lcd.setCursor(0, 2);
-    lcd.print("IE: 1:");
+    lcd.setCursor(12, 2);
+    lcd.print(" IE: 1:");
     lcd.print(ie_ratio);
     lcd.print("  ");
 
     // Peak Pressure
-    lcd.setCursor(10, 2);
-    lcd.print("PkP");
-    lcd.print(p_peak);
+    lcd.setCursor(0, 0);
+    lcd.print(" Pk: ");
+    lcd.print(p_peak,0);
     lcd.print("  ");
 
     // Plateau Pressure
-    lcd.setCursor(0, 3);
-    lcd.print("PltP: ");
-    lcd.print(p_plat);
+    lcd.setCursor(0, 1);
+    lcd.print("Plt: ");
+    lcd.print(p_plat,0);
     lcd.print(" ");
 
     // // Temperature
@@ -145,11 +177,20 @@ void updateLCD()
 }
 
 void driveMotor(double _vel) {
-    if(_vel>0) { digitalWrite(PIN_MOTOR_A,0); digitalWrite(PIN_MOTOR_B,1); }
-    else      { digitalWrite(PIN_MOTOR_A,1); digitalWrite(PIN_MOTOR_B,0); }
+    if(_vel>0) { digitalWrite(PIN_MOTOR_A,1); digitalWrite(PIN_MOTOR_B,0); }
+    else      { digitalWrite(PIN_MOTOR_A,0); digitalWrite(PIN_MOTOR_B,1); }
+    
+    // Vel Output // Debug
+    // lcd.setCursor(2, 0);
+    // lcd.print("V: ");
+    // lcd.print(_vel, 0);
+    // lcd.print(" Mx:");
 
-    if(_vel > v_max){ _vel = v_max;};
-    analogWrite(PIN_MOTOR_PWM,abs((int)_vel));
+    if(abs(_vel) > v_max){ _vel = v_max;};
+    analogWrite(PIN_MOTOR_PWM,abs((int)_vel));    
+
+    if (_vel > debug_max_v){ debug_max_v = _vel;}
+    // lcd.print(_vel, 0); // Debug
 }
 
 void initializeLCD(){
@@ -166,7 +207,7 @@ void initializeLCD(){
 }
 
 void resetStateClock(){
-    t_start = millis() * 1000;
+    t_start = millis() / 1000.0;
     t_current = 0;
 }
 
@@ -184,19 +225,31 @@ void setup()
     myPID.SetMode(AUTOMATIC);
     myPID.SetSampleTime(1);
     myPID.SetOutputLimits(-255,255);
+    
+    readSettings();
+    updateSettings();
 }
 
+int lcd_timer = 0;
 void loop()
 {
-    t_current = millis()*1000 - t_start; // Update timer
+    t_current = millis() / 1000.0 - t_start; // Update timer
 
     /**************************************************/
     // Read Sensors
     /**************************************************/
     p_meas = bmp.readPressure();
     enc_input = myEnc.read();
+
     // at_home = !digitalRead(PIN_HOME_SWITCH); // TODO chcek if this is backwards.
-    
+
+    // Check if at open position (home).
+    if (abs(enc_input - pos_open) < 20 ){
+        at_home = true;
+    }
+    else if (abs(enc_input - pos_open) > 25 ){ // 5 tick gap for debouncing
+        at_home = false;
+    }
 
     /**************************************************/
     // Check Fault Conditions
@@ -230,8 +283,7 @@ void loop()
             }
         }
         else {
-            myEnc.write(-30);   // Set home position to a little bit before hard stop.
-            pos_home = 0;       // Calibrate home position
+            myEnc.write(-pos_hardstop_offset);   // Set home position to a little bit before hard stop.
             state = SETUP;
         }
         break;
@@ -252,8 +304,9 @@ void loop()
     case INHALE:
         if(t_current < t_in){
             // Command motor to go to position VT, at velocity v_in
-            pos_setpoint = pos_max * tidal_vol;
-            v_max = v_in * 1.10; // TODO: Ensure this doesn't reduce the volume displaced
+            // TODO: Fix this to actually hit the setpoint (not just using the 1.5 fudge number)
+            pos_setpoint = (pos_closed * tidal_vol) * (t_current / t_in) * 1.5; // Spread the inhale over the whole inhalation time frame
+            v_max = v_in; // TODO: Ensure this doesn't reduce the volume displaced
         }
         else {
             state = PAUSE;
@@ -268,9 +321,15 @@ void loop()
             pos_setpoint = enc_input;
         }
         else {
-            p_plat = p_meas; // Record plateau pressure
+            p_plat = p_meas - 100000; // Record plateau pressure TODO: Fix to meaningful pressure number
             state = EXHALE;
             resetStateClock();
+            // lcd.setCursor(0, 3);
+            // lcd.print("Max p:");
+            // lcd.print(enc_input, 0);
+            // lcd.print(" v:");
+            // lcd.print(debug_max_v, 0);
+            debug_max_v = 0;
         }
         break;
     
@@ -278,12 +337,18 @@ void loop()
     case EXHALE:
         if(t_current < t_ex){
             // Command motor to go to home position, at velocity v_ex
-            pos_setpoint = pos_open;
-            v_max = v_ex;
+            if(!at_home){
+                pos_setpoint = pos_open;
+                v_max = v_ex;
+            }
+            else{
+                pos_setpoint = enc_input;
+            }
         }
         else {
             // Check if input settings have changed
             readSettings();
+            updateSettings();
             state = INHALE;
             resetStateClock();
         }
@@ -300,5 +365,11 @@ void loop()
     while(!myPID.Compute());
     // TODO: Calculate if on-track to be on-time. If not, adjust accordingly.
     driveMotor(vel_output);
-    updateLCD(); // TODO: Don't do this every loop, it's slow.
+    readSettings();
+
+    // Update LCD every 30 loops
+    if(lcd_timer++ >= 15){
+        updateLCD(); // TODO: Don't do this every loop, it's slow.
+        lcd_timer = 0;
+    }
 }
