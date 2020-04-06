@@ -60,7 +60,7 @@ double t_start = 0;         // Time elapsed in current state
 float p_peak = 0;           // Maximum pressure during inhale. We consider 40 cmH20 to be the upper pressure limit for safety.
 float p_peak_last = 0;      // Maximum pressure during inhale of last complete inhalation.
 float p_plat = 0;           // The plateau pressure of the inhale. An important diagnostic number for clinicians.
-int peep = 0;               // The residual pressure in the system after exhale. Controlled manually via a PEEP valve on the Ambu Bag.
+float p_peep = 0;           // Pressure after exhlalation, also known as PEEP (Positive End Expiratory Pressure). Controlled manually via a PEEP valve on the Ambu Bag.
 long p_meas = 0;            // Measured pressure
 bool at_home = false;       // Flag indicating limit switch at home is pressed.
 float v_max = 0.0;          // Set the max speed of the fingers, depending on state TODO: Determine if there's a better way to do MISO/Split-PID control.
@@ -115,7 +115,7 @@ void updateLCD()
     
     // Current Pressure
     lcd.setCursor(0, 3);
-    lcd.print("P:");
+    lcd.print("  P: ");
     lcd.print(p_meas);
     lcd.print("   ");
 
@@ -171,6 +171,12 @@ void updateLCD()
     lcd.setCursor(0, 1);
     lcd.print("PlP: ");
     lcd.print(p_plat,0);
+    lcd.print(" ");
+
+    // Plateau Pressure
+    lcd.setCursor(0, 2);
+    lcd.print("PEEP:");
+    lcd.print(p_peep,0);
     lcd.print(" ");
 
     // // Temperature
@@ -357,6 +363,7 @@ void loop()
             readSettings();
             updateSettings();
             state = INHALE;
+            p_peep = p_meas;
             resetStateClock();
         }
         break;
