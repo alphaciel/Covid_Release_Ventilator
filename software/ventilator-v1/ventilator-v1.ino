@@ -58,6 +58,7 @@ int state; // Current state
 double t_current = 0;       // Time elapsed in current state
 double t_start = 0;         // Time elapsed in current state
 float p_peak = 0;           // Maximum pressure during inhale. We consider 40 cmH20 to be the upper pressure limit for safety.
+float p_peak_last = 0;      // Maximum pressure during inhale of last complete inhalation.
 float p_plat = 0;           // The plateau pressure of the inhale. An important diagnostic number for clinicians.
 int peep = 0;               // The residual pressure in the system after exhale. Controlled manually via a PEEP valve on the Ambu Bag.
 long p_meas = 0;            // Measured pressure
@@ -162,13 +163,13 @@ void updateLCD()
 
     // Peak Pressure
     lcd.setCursor(0, 0);
-    lcd.print(" Pk: ");
-    lcd.print(p_peak,0);
+    lcd.print("PkP: ");
+    lcd.print(p_peak_last,0);
     lcd.print("  ");
 
     // Plateau Pressure
     lcd.setCursor(0, 1);
-    lcd.print("Plt: ");
+    lcd.print("PlP: ");
     lcd.print(p_plat,0);
     lcd.print(" ");
 
@@ -310,6 +311,7 @@ void loop()
             // TODO: Fix this to actually hit the setpoint (not just using the 1.5 fudge number)
             pos_setpoint = (pos_closed * tidal_vol) * (t_current / t_in) * 1.5; // Spread the inhale over the whole inhalation time frame
             v_max = v_in; // TODO: Ensure this doesn't reduce the volume displaced
+            if(p_meas > p_peak){p_peak = p_meas;}
         }
         else {
             state = PAUSE;
@@ -324,7 +326,9 @@ void loop()
             pos_setpoint = enc_input;
         }
         else {
-            p_plat = p_meas; // Record plateau pressure
+            p_plat = p_meas;        // Record plateau pressure
+            p_peak_last = p_peak;   // Update peak pressure 
+            p_peak = 0;
             state = EXHALE;
             resetStateClock();
             // lcd.setCursor(0, 3);
