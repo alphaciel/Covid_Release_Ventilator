@@ -48,7 +48,7 @@ const int PIN_TIDAL_VOLUME_INPUT    = A3;
 const int PIN_MOTOR_PWM             = 5;
 const int PIN_MOTOR_A               = 6;
 const int PIN_MOTOR_B               = 7;
-const int PIN_HOME_SWITCH           = 7;
+const int PIN_HOME_SWITCH           = 8;
 
 
 /**************************************************/
@@ -80,6 +80,9 @@ float t_in = 0;       // The length of time (in seconds) of the inspiratory phas
 float t_ex = 0;       // The length of time (in seconds) of the expiratory phase.
 float v_in = 0;       // The rotation rate of the inspiratory phase (in pulses/second).
 
+// Constants
+double paToCmH2O = 98.0665;
+
 // PID
 double enc_input=0, vel_output=0, pos_setpoint=0;
 PID myPID(&enc_input, &vel_output, &pos_setpoint,kp,ki,kd, DIRECT);
@@ -110,10 +113,10 @@ void updateLCD()
     // lcd.print("");
     
     // Current Pressure
-    // lcd.setCursor(0, 0);
-    // lcd.print("P= ");
-    // lcd.print(bmp.readPressure());
-    // lcd.print("   ");
+    lcd.setCursor(0, 3);
+    lcd.print("P:");
+    lcd.print(p_meas);
+    lcd.print("   ");
 
     // t_in, t_ex, 
     // lcd.setCursor(0, 1);
@@ -238,7 +241,7 @@ void loop()
     /**************************************************/
     // Read Sensors
     /**************************************************/
-    p_meas = bmp.readPressure();
+    p_meas = bmp.readPressure() / paToCmH2O;
     enc_input = myEnc.read();
 
     // at_home = !digitalRead(PIN_HOME_SWITCH); // TODO chcek if this is backwards.
@@ -321,7 +324,7 @@ void loop()
             pos_setpoint = enc_input;
         }
         else {
-            p_plat = p_meas - 100000; // Record plateau pressure TODO: Fix to meaningful pressure number
+            p_plat = p_meas; // Record plateau pressure
             state = EXHALE;
             resetStateClock();
             // lcd.setCursor(0, 3);
