@@ -32,6 +32,7 @@ double kd=0;
 int pos_open = 0;               // Where the figers should open to between breaths.
 int pos_closed = 230;           // TODO: Determine how to calibrate this.
 int pos_threshold = 20;         // How big is the 'home' area
+int pos_threshold_debounce = 5;
 int pos_hardstop_offset = 180;  // How far home position is from hard stop.
 int v_homing = 25;              // The velocity of the fingers during homing (i.e. slow), in % of max.
 int step_size = 5;              // Step size during home scan (will affect how fast calibration happens)
@@ -254,10 +255,10 @@ void loop()
     // at_home = !digitalRead(PIN_HOME_SWITCH); // TODO chcek if this is backwards.
 
     // Check if at open position (home).
-    if (abs(enc_input - pos_open) < 20 ){
+    if (abs(enc_input - pos_open) < pos_threshold ){
         at_home = true;
     }
-    else if (abs(enc_input - pos_open) > 25 ){ // 5 tick gap for debouncing
+    else if (abs(enc_input - pos_open) > (pos_threshold + pos_threshold_debounce) ){ // 5 tick gap for debouncing
         at_home = false;
     }
 
