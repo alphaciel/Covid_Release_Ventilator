@@ -4,6 +4,8 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_BMP085.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_MPU6050.h>
 #include <Encoder.h>
 #include <PID_v1.h>
 
@@ -12,6 +14,7 @@ Encoder myEnc(3, 2);
 LiquidCrystal_I2C lcd(0x27, 20, 4); // set the LCD address to 0x27 for a 16 chars and 2 line display
 
 Adafruit_BMP085 bmp;
+Adafruit_MPU6050 mpu;
 
 enum states {CALIBRATION, SETUP, INHALE, PAUSE, EXHALE};
 
@@ -88,6 +91,7 @@ double paToCmH2O = 98.0665;
 // PID
 double enc_input=0, vel_output=0, pos_setpoint=0;
 PID myPID(&enc_input, &vel_output, &pos_setpoint,kp,ki,kd, DIRECT);
+sensors_event_t a, g, temp;                 // IMU
 
 
 void readSettings(){
@@ -119,6 +123,12 @@ void updateLCD()
     lcd.print("  P: ");
     lcd.print(p_meas);
     lcd.print("   ");
+
+    // Current Pressure
+    // lcd.setCursor(12, 3);
+    // lcd.print("Ang: ");
+    // lcd.print(a.acceleration.y, 1);
+    // lcd.print("   ");
 
     // t_in, t_ex, 
     // lcd.setCursor(0, 1);
@@ -207,14 +217,28 @@ void driveMotor(double _vel) {
 void initializeLCD(){
     lcd.init();
     lcd.backlight();
+}
+
+void initializePressureSensor(){
     if (!bmp.begin())
     {
         lcd.setCursor(0, 0);
         lcd.print("Cannot Find BMP180");
-        while (1)
-        {
+        while (1){
         }
     }
+}
+
+void initializeIMU(){
+    if (!mpu.begin()) {
+        lcd.setCursor(0, 0);
+        lcd.print("Cannot find MPU6050");
+        delay(3000);
+        lcd.clear();
+    }
+    mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
+    mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 }
 
 void resetStateClock(){
@@ -226,6 +250,8 @@ void setup()
 {
     state = CALIBRATION;
     initializeLCD();
+    initializePressureSensor();
+    initializeIMU();
 
     pinMode(PIN_MOTOR_A, OUTPUT); 
     pinMode(PIN_MOTOR_B, OUTPUT);  
@@ -249,8 +275,9 @@ void loop()
     /**************************************************/
     // Read Sensors
     /**************************************************/
-    p_meas = bmp.readPressure() / paToCmH2O;
-    enc_input = myEnc.read();
+    p_meas = bmp.readPressure() / paToCmH2O - 1000; // Pressure sensor
+    enc_input = myEnc.read();                   // Encoder
+    mpu.getEvent(&a, &g, &temp);                // IMU
 
     // at_home = !digitalRead(PIN_HOME_SWITCH); // TODO chcek if this is backwards.
 
